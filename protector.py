@@ -18,10 +18,31 @@ class Protector:
             return
 
         try:
-            resp = self.trader.session.get_open_orders(category="linear", symbol=symbol, orderId=state['tp1_order_id'])
+            order_id = state['tp1_order_id']
+            self.log.info(f"Проверка статуса ордера TP1 {order_id} для {symbol}...")
             
-            # Если ордер исполнен (не найден в списке активных)
-            if resp['retCode'] == 0 and not resp['result']['list']:
+            # Используем запрос истории ордеров, так как он показывает и исполненные ордера
+            resp = self.trader.session.get_order_history(
+                category="linear", 
+                symbol=symbol, 
+                orderId=order_id,
+                limit=1
+            )
+            
+            if resp['retCode'] != 0:
+                self.log.error(f"Ошибка API при проверке ордера {order_id} для {symbol}: {resp.get('retMsg')}")
+                return
+
+            order_list = resp.get('result', {}).get('list', [])
+            if not order_list:
+                self.log.warning(f"Не удалось найти историю для ордера {order_id}. Возможно, он еще не исполнен.")
+                return
+
+            latest_order_status = order_list[0].get('orderStatus')
+            self.log.info(f"Текущий статус ордера TP1 для {symbol} на бирже: {latest_order_status}")
+
+            # Если ордер исполнен
+            if latest_order_status == 'Filled':
                 self.log.info(f"TP1 для {symbol} исполнен! Запускаю процедуру управления позицией.")
                 
                 # --- Этап 1: Отмена старого стоп-лосса ---
@@ -70,9 +91,9 @@ class Protector:
                     self.log.critical(f"ОШИБКА ВЕРИФИКАЦИИ: Не удалось переместить стоп-лосс для {symbol}! "
                                       f"Цель: {sl_price_target}, Текущий SL на бирже: {current_sl}. "
                                       f"ТРЕБУЕТСЯ РУЧНОЕ ВМЕШАТЕЛЬСТВО!")
-
+            
         except Exception as e:
-            self.log.error(f"Ошибка при проверке TP1 для {symbol}: {e}")
+            self.log.error(f"Критическая ошибка в check_tp1_order для {symbol}: {e}", exc_info=True)
 
     def run_management_cycle(self):
         """Основной цикл управления открытыми позициями на основе сохраненного состояния."""
