@@ -137,24 +137,26 @@ class BybitTrader:
 
         try:
             resp = self.session.set_trading_stop(**params)
+        
+            self.log.info(f"Ответ API для установки SL/TP: retCode={resp.get('retCode')}, retMsg={resp.get('retMsg')}")
+        
+            if resp['retCode'] == 0:
+                self.log.info(f"SL/TP для {symbol} успешно установлены/изменены.")
+                return True
+            else:
+                error_msg = resp.get('retMsg', 'Unknown error')
+                self.log.error(f"Ошибка установки SL/TP для {symbol}: {error_msg}")
+            
+                # Логируем дополнительную информацию для диагностики
+                if 'result' in resp:
+                    self.log.error(f"Дополнительная информация: {resp['result']}")
+            
+                return False
+            
         except Exception as e:
             self.log.error(f"Исключение при установке SL/TP для {symbol}: {e}", exc_info=True)
             return False
 
-        self.log.info(f"Ответ API для установки SL/TP: retCode={resp.get('retCode')}, retMsg={resp.get('retMsg')}")
-        
-        if resp['retCode'] == 0:
-            self.log.info(f"SL/TP для {symbol} успешно установлены/изменены.")
-            return True
-        else:
-            error_msg = resp.get('retMsg', 'Unknown error')
-            self.log.error(f"Ошибка установки SL/TP для {symbol}: {error_msg}")
-            
-            # Логируем дополнительную информацию для диагностики
-            if 'result' in resp:
-                self.log.error(f"Дополнительная информация: {resp['result']}")
-            
-            return False
             
     
 
@@ -179,83 +181,83 @@ class BybitTrader:
             self.log.error(f"Исключение при размещении Reduce-Only ордера: {e}")
             return None
 
-def cancel_all_stop_orders(self, symbol: str, max_retries: int = 3):
-    """Отменяет все стоп-ордера (SL/TP) для символа с проверкой результата."""
-    self.log.info(f"Отмена всех стоп-ордеров для {symbol}...")
+    def cancel_all_stop_orders(self, symbol: str, max_retries: int = 3):
+        """Отменяет все стоп-ордера (SL/TP) для символа с проверкой результата."""
+        self.log.info(f"Отмена всех стоп-ордеров для {symbol}...")
     
-    for attempt in range(max_retries):
-        try:
-            # Сначала получаем список всех активных стоп-ордеров
-            open_orders_resp = self.session.get_open_orders(
-                category="linear",
-                symbol=symbol,
-                orderFilter="StopOrder"
-            )
-            
-            if open_orders_resp.get('retCode') != 0:
-                self.log.error(f"Ошибка получения стоп-ордеров для {symbol}: {open_orders_resp.get('retMsg')}")
-                continue
-                
-            active_stop_orders = open_orders_resp.get('result', {}).get('list', [])
-            
-            if not active_stop_orders:
-                self.log.info(f"Нет активных стоп-ордеров для {symbol}.")
-                return True
-            
-            self.log.info(f"Найдено {len(active_stop_orders)} активных стоп-ордеров для {symbol}. Отменяем...")
-            
-            # Отменяем все стоп-ордера
-            resp = self.session.cancel_all_orders(
-                category="linear",
-                symbol=symbol,
-                orderFilter="StopOrder"
-            )
-            
-            self.log.info(f"Ответ API на отмену стоп-ордеров: retCode={resp.get('retCode')}, retMsg={resp.get('retMsg')}")
-            
-            if resp.get('retCode') == 0:
-                # Проверяем, что ордера действительно отменены
-                time.sleep(1)
-                
-                verify_resp = self.session.get_open_orders(
+        for attempt in range(max_retries):
+            try:
+                # Сначала получаем список всех активных стоп-ордеров
+                open_orders_resp = self.session.get_open_orders(
                     category="linear",
                     symbol=symbol,
                     orderFilter="StopOrder"
                 )
+            
+                if open_orders_resp.get('retCode') != 0:
+                    self.log.error(f"Ошибка получения стоп-ордеров для {symbol}: {open_orders_resp.get('retMsg')}")
+                    continue
                 
-                if verify_resp.get('retCode') == 0:
-                    remaining_orders = verify_resp.get('result', {}).get('list', [])
-                    if not remaining_orders:
-                        self.log.info(f"Все стоп-ордера для {symbol} успешно отменены (попытка {attempt + 1}).")
+                active_stop_orders = open_orders_resp.get('result', {}).get('list', [])
+            
+                if not active_stop_orders:
+                    self.log.info(f"Нет активных стоп-ордеров для {symbol}.")
+                    return True
+            
+                self.log.info(f"Найдено {len(active_stop_orders)} активных стоп-ордеров для {symbol}. Отменяем...")
+            
+                # Отменяем все стоп-ордера
+                resp = self.session.cancel_all_orders(
+                    category="linear",
+                    symbol=symbol,
+                    orderFilter="StopOrder"
+                )
+            
+                self.log.info(f"Ответ API на отмену стоп-ордеров: retCode={resp.get('retCode')}, retMsg={resp.get('retMsg')}")
+            
+                if resp.get('retCode') == 0:
+                    # Проверяем, что ордера действительно отменены
+                    time.sleep(1)
+                
+                    verify_resp = self.session.get_open_orders(
+                        category="linear",
+                        symbol=symbol,
+                        orderFilter="StopOrder"
+                    )
+                
+                    if verify_resp.get('retCode') == 0:
+                        remaining_orders = verify_resp.get('result', {}).get('list', [])
+                        if not remaining_orders:
+                            self.log.info(f"Все стоп-ордера для {symbol} успешно отменены (попытка {attempt + 1}).")
+                            return True
+                        else:
+                            self.log.warning(f"Осталось {len(remaining_orders)} неотмененных стоп-ордеров для {symbol}")
+                            if attempt < max_retries - 1:
+                                time.sleep(2)  # Ждем перед повторной попыткой
+                                continue
+                    else:
+                        self.log.error(f"Не удалось проверить статус отмены для {symbol}")
+                    
+                else:
+                    error_msg = resp.get('retMsg', 'Unknown error')
+                    # Ошибки "no orders to cancel" являются нормальными
+                    if "no orders to cancel" in error_msg.lower():
+                        self.log.info(f"Нет активных стоп-ордеров для отмены по {symbol}.")
                         return True
                     else:
-                        self.log.warning(f"Осталось {len(remaining_orders)} неотмененных стоп-ордеров для {symbol}")
+                        self.log.error(f"Ошибка при отмене стоп-ордеров для {symbol}: {error_msg}")
                         if attempt < max_retries - 1:
-                            time.sleep(2)  # Ждем перед повторной попыткой
+                            time.sleep(2)
                             continue
-                else:
-                    self.log.error(f"Не удалось проверить статус отмены для {symbol}")
-                    
-            else:
-                error_msg = resp.get('retMsg', 'Unknown error')
-                # Ошибки "no orders to cancel" являются нормальными
-                if "no orders to cancel" in error_msg.lower():
-                    self.log.info(f"Нет активных стоп-ордеров для отмены по {symbol}.")
-                    return True
-                else:
-                    self.log.error(f"Ошибка при отмене стоп-ордеров для {symbol}: {error_msg}")
-                    if attempt < max_retries - 1:
-                        time.sleep(2)
-                        continue
                         
-        except Exception as e:
-            self.log.error(f"Исключение при отмене стоп-ордеров для {symbol} (попытка {attempt + 1}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2)
-                continue
+            except Exception as e:
+                self.log.error(f"Исключение при отмене стоп-ордеров для {symbol} (попытка {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
     
-    self.log.error(f"Не удалось отменить стоп-ордера для {symbol} после {max_retries} попыток")
-    return False
+        self.log.error(f"Не удалось отменить стоп-ордера для {symbol} после {max_retries} попыток")
+        return False
 
     def get_open_positions(self, symbol: str):
         """Проверяет наличие открытых позиций."""
