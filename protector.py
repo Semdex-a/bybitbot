@@ -35,8 +35,8 @@ class Protector:
                 sl_price = Decimal(str(state['entry_price'])).quantize(tick_size, rounding=ROUND_DOWN if state['side'] == "Buy" else ROUND_UP)
                 tp_price = Decimal(str(state['tp2_price'])).quantize(tick_size, rounding=ROUND_UP if state['side'] == "Buy" else ROUND_DOWN)
                 
-                # Устанавливаем новые SL/TP для оставшейся позиции
-                if self.trader.set_trading_stop(symbol, str(sl_price), str(tp_price), state['side']):
+                # Устанавливаем новые SL/TP для оставшейся позиции в режиме "Partial"
+                if self.trader.set_trading_stop(symbol, str(sl_price), str(tp_price), state['side'], tpsl_mode="Partial"):
                     # Обновляем состояние и сохраняем
                     state['state'] = "BE_PENDING"  # BE = BreakEven
                     state['sl_price'] = float(sl_price)
