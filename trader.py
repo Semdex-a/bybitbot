@@ -113,25 +113,26 @@ class BybitTrader:
             self.log.error(f"Исключение при размещении рыночного ордера: {e}")
             return None
 
-    def set_trading_stop(self, symbol: str, sl_price: str, tp_price: str, side: str, tpsl_mode: str = "Full", sl_size: str = None, tp_size: str = None):
-        """Устанавливает SL/TP для существующей позиции, правильно указывая positionIdx."""
-        self.log.info(f"Установка SL={sl_price} TP={tp_price} для {symbol} | Режим={tpsl_mode} | SL_Size={sl_size} TP_Size={tp_size}")
+    def set_trading_stop(self, symbol: str, side: str, sl_price: str = None, tp_price: str = None):
+        """Устанавливает SL/TP для существующей позиции. Отправляет только необходимые параметры."""
+        self.log.info(f"Установка SL={sl_price} TP={tp_price} для {symbol}")
         
         position_idx = 1 if side == "Buy" else 2
         
+        params = {
+            "category": "linear",
+            "symbol": symbol,
+            "positionIdx": position_idx
+        }
+        if sl_price:
+            params["stopLoss"] = sl_price
+        if tp_price:
+            params["takeProfit"] = tp_price
+
         try:
-            resp = self.session.set_trading_stop(
-                category="linear", 
-                symbol=symbol, 
-                stopLoss=sl_price, 
-                takeProfit=tp_price,
-                positionIdx=position_idx, 
-                tpslMode=tpsl_mode,
-                slSize=sl_size,
-                tpSize=tp_size
-            )
+            resp = self.session.set_trading_stop(**params)
             if resp['retCode'] == 0:
-                self.log.info(f"SL/TP для {symbol} успешно установлены.")
+                self.log.info(f"SL/TP для {symbol} успешно установлены/изменены.")
                 return True
             else:
                 self.log.error(f"Ошибка установки SL/TP: {resp.get('retMsg', 'Unknown error')}")
@@ -288,7 +289,8 @@ class BybitTrader:
         sl_price = Decimal(str(signal_data['stop_loss'])).quantize(tick_size, rounding=ROUND_DOWN if side == "Buy" else ROUND_UP)
         tp1_price = Decimal(str(signal_data['tp1'])).quantize(tick_size, rounding=ROUND_UP if side == "Buy" else ROUND_DOWN)
         
-        self.set_trading_stop(symbol, str(sl_price), "0", side)
+        # Устанавливаем только стоп-лосс при открытии
+        self.set_trading_stop(symbol=symbol, side=side, sl_price=str(sl_price))
 
         partial_qty_decimal = (Decimal(str(qty)) * Decimal(str(self.partial_tp_percent / 100))).quantize(Decimal(lot_size_filter['qtyStep']), rounding=ROUND_DOWN)
         partial_qty = float(partial_qty_decimal)
