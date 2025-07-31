@@ -22,52 +22,54 @@ class Protector:
             
             # Если ордер исполнен (не найден в списке активных)
             if resp['retCode'] == 0 and not resp['result']['list']:
-                self.log.info(f"TP1 для {symbol} исполнен! Запускаю процедуру управления позицией (установка БУ и ТП2).")
+                self.log.info(f"TP1 для {symbol} исполнен! Запускаю процедуру управления позицией.")
                 
-                # 1. Отменяем старый стоп-лосс
-                if not self.trader.cancel_all_stop_orders(symbol):
-                    self.log.error(f"Не удалось отменить старый SL для {symbol}. Управление позицией может быть нарушено.")
-                    # Продолжаем, так как установка нового SL может сработать
-                
-                time.sleep(0.5) # Даем бирже время на обработку отмены
+                # --- Этап 1: Отмена старого стоп-лосса ---
+                self.trader.cancel_all_stop_orders(symbol)
+                time.sleep(0.5)
 
-                # 2. Получаем актуальный размер оставшейся позиции
-                remaining_position = self.trader.get_open_positions(symbol)
-                if not remaining_position:
-                    self.log.info(f"Позиция по {symbol} была полностью закрыта во время обработки TP1. Завершаю управление.")
+                # --- Этап 2: Получение актуальной информации о позиции ---
+                position = self.trader.get_open_positions(symbol)
+                if not position:
+                    self.log.info(f"Позиция по {symbol} закрылась во время обработки. Завершаю.")
+                    self.trade_state.remove_state(symbol)
+                    return
+                
+                remaining_size = position['size']
+                self.log.info(f"Оставшийся размер позиции {symbol}: {remaining_size}")
+
+                # --- Этап 3: Установка нового SL/TP ---
+                instrument_info = self.trader.get_instrument_info(symbol)
+                tick_size = Decimal(instrument_info['priceFilter']['tickSize'])
+                
+                sl_price_target = Decimal(str(state['entry_price'])).quantize(tick_size, rounding=ROUND_DOWN if state['side'] == "Buy" else ROUND_UP)
+                tp_price_target = Decimal(str(state['tp2_price'])).quantize(tick_size, rounding=ROUND_UP if state['side'] == "Buy" else ROUND_DOWN)
+                
+                self.trader.set_trading_stop(
+                    symbol, str(sl_price_target), str(tp_price_target), state['side'], 
+                    tpsl_mode="Partial", sl_size=str(remaining_size), tp_size=str(remaining_size)
+                )
+
+                # --- Этап 4: Верификация ---
+                time.sleep(3) # Ждем 3 секунды
+                
+                final_position_check = self.trader.get_open_positions(symbol)
+                if not final_position_check:
+                    self.log.warning(f"Позиция по {symbol} закрылась сразу после установки нового SL. Завершаю.")
                     self.trade_state.remove_state(symbol)
                     return
 
-                remaining_size = remaining_position['size']
-                self.log.info(f"Оставшийся размер позиции по {symbol}: {remaining_size}")
-
-                # 3. Устанавливаем новый SL в безубыток и новый TP2
-                instrument_info = self.trader.get_instrument_info(symbol)
-                if not instrument_info:
-                    self.log.error(f"Не удалось получить инфо для {symbol}, невозможно установить новый SL/TP.")
-                    return
-
-                tick_size = Decimal(instrument_info['priceFilter']['tickSize'])
+                current_sl = final_position_check.get('stopLoss', '')
                 
-                sl_price = Decimal(str(state['entry_price'])).quantize(tick_size, rounding=ROUND_DOWN if state['side'] == "Buy" else ROUND_UP)
-                tp_price = Decimal(str(state['tp2_price'])).quantize(tick_size, rounding=ROUND_UP if state['side'] == "Buy" else ROUND_DOWN)
-                
-                # Явно указываем размер для SL и TP
-                if self.trader.set_trading_stop(
-                    symbol, 
-                    sl_price=str(sl_price), 
-                    tp_price=str(tp_price), 
-                    side=state['side'], 
-                    tpsl_mode="Partial", # Partial, так как позиция уже не полная
-                    sl_size=str(remaining_size),
-                    tp_size=str(remaining_size)
-                ):
+                if current_sl and Decimal(current_sl) == sl_price_target:
+                    self.log.info(f"УСПЕХ: Стоп-лосс для {symbol} успешно перемещен на {current_sl}.")
                     state['state'] = "BE_PENDING"
-                    state['sl_price'] = float(sl_price)
+                    state['sl_price'] = float(sl_price_target)
                     self.trade_state.set_state(symbol, state)
-                    self.log.info(f"Позиция {symbol} успешно переведена в безубыток с новым TP. Состояние обновлено на {state['state']}.")
                 else:
-                    self.log.error(f"Не удалось установить новый SL/TP для {symbol} после исполнения TP1.")
+                    self.log.critical(f"ОШИБКА ВЕРИФИКАЦИИ: Не удалось переместить стоп-лосс для {symbol}! "
+                                      f"Цель: {sl_price_target}, Текущий SL на бирже: {current_sl}. "
+                                      f"ТРЕБУЕТСЯ РУЧНОЕ ВМЕШАТЕЛЬСТВО!")
 
         except Exception as e:
             self.log.error(f"Ошибка при проверке TP1 для {symbol}: {e}")
