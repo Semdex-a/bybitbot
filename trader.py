@@ -155,6 +155,29 @@ class BybitTrader:
             self.log.error(f"Исключение при размещении Reduce-Only ордера: {e}")
             return None
 
+    def cancel_all_stop_orders(self, symbol: str):
+        """Отменяет все стоп-ордера (SL/TP) для символа."""
+        self.log.info(f"Отмена всех стоп-ордеров для {symbol}...")
+        try:
+            resp = self.session.cancel_all_orders(
+                category="linear",
+                symbol=symbol,
+                orderFilter="StopOrder"
+            )
+            if resp.get('retCode') == 0:
+                self.log.info(f"Все стоп-ордера для {symbol} успешно отменены.")
+                return True
+            else:
+                # Ошибки "no orders to cancel" являются нормальными, если SL уже сработал
+                if "no orders to cancel" in resp.get('retMsg', ''):
+                    self.log.info(f"Нет активных стоп-ордеров для отмены по {symbol}.")
+                    return True
+                self.log.error(f"Ошибка при отмене стоп-ордеров для {symbol}: {resp.get('retMsg')}")
+                return False
+        except Exception as e:
+            self.log.error(f"Исключение при отмене стоп-ордеров для {symbol}: {e}")
+            return False
+
     def get_open_positions(self, symbol: str):
         """Проверяет наличие открытых позиций."""
         try:
