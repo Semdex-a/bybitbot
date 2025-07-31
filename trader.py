@@ -63,55 +63,58 @@ class BybitTrader:
                 self.log.error(f"Ошибка установки плеча для {symbol}: {e}")
 
     def calculate_position_size(self, approx_entry_price: float, stop_loss_price: float, symbol: str, lot_size_filter, risk_percent: float):
-        """Рассчитывает размер позиции с тройным контролем: по риску, по лимиту маржи и по мин. ордеру."""
+        """Рассчитывает размер позиции с адаптивным риском под минимальные требования."""
         balance = self.get_balance()
         if balance <= 0: return None
 
-        margin_limit_percent = 0.20
+        margin_limit_percent = 0.30  # Увеличиваем до 30%
         allowed_margin = balance * margin_limit_percent
         max_position_value = allowed_margin * self.leverage
         qty_by_margin_limit = max_position_value / approx_entry_price
 
-        risk_amount = balance * (risk_percent / 100)
         price_risk_per_unit = abs(approx_entry_price - stop_loss_price)
         if price_risk_per_unit == 0: 
             self.log.error("Цена входа и стоп-лосс совпадают, невозможно рассчитать риск.")
             return None
-        qty_by_risk = risk_amount / price_risk_per_unit
-        
-        final_qty = min(qty_by_risk, qty_by_margin_limit)
-        self.log.info(f"Расчет размера (риск={risk_percent}%): по риску={qty_by_risk:.4f}, по лимиту маржи={qty_by_margin_limit:.4f}. Выбран меньший: {final_qty:.4f}")
 
+        # Исходный расчет по риску
+        risk_amount = balance * (risk_percent / 100)
+        qty_by_risk = risk_amount / price_risk_per_unit
+    
         min_order_qty = float(lot_size_filter['minOrderQty'])
-        qty_step = Decimal(lot_size_filter['qtyStep'])
+    
+        # АДАПТИВНАЯ ЛОГИКА: Если размер слишком мал, увеличиваем риск автоматически
+        if qty_by_risk < min_order_qty:
+            # Рассчитываем минимальный риск для этого инструмента
+            min_required_risk_percent = (min_order_qty * price_risk_per_unit / balance) * 100
+        
+            # Увеличиваем риск максимум в 3 раза от исходного
+            max_allowed_risk = risk_percent * 3
+            adapted_risk = min(min_required_risk_percent * 1.1, max_allowed_risk)  # +10% запас
+        
+            if adapted_risk <= max_allowed_risk:
+                self.log.info(f"АДАПТАЦИЯ РИСКА для {symbol}: исходный {risk_percent}% -> адаптированный {adapted_risk:.2f}% "
+                             f"(минимальный требуемый: {min_required_risk_percent:.2f}%)")
+                risk_amount = balance * (adapted_risk / 100)
+                qty_by_risk = risk_amount / price_risk_per_unit
+            else:
+                self.log.warning(f"Невозможно адаптировать риск для {symbol}. "
+                               f"Требуется {min_required_risk_percent:.2f}%, максимально допустимый: {max_allowed_risk:.2f}%. "
+                               f"Увеличьте баланс или базовый риск-процент.")
+                return None
+    
+        final_qty = min(qty_by_risk, qty_by_margin_limit)
+    
+        self.log.info(f"Расчет размера для {symbol}: "
+                     f"по риску={qty_by_risk:.6f}, по лимиту маржи={qty_by_margin_limit:.6f}, "
+                     f"минимальный ордер={min_order_qty}, выбран: {final_qty:.6f}")
 
         if final_qty < min_order_qty:
-            self.log.warning(f"Расчетный объем {final_qty:.6f} меньше минимального {min_order_qty}. Сделка отменена.")
+            self.log.warning(f"Финальный размер {final_qty:.6f} все еще меньше минимального {min_order_qty} для {symbol}. Сделка отменена.")
             return None
-        
+    
+        qty_step = Decimal(lot_size_filter['qtyStep'])
         return float(Decimal(str(final_qty)).quantize(qty_step, rounding=ROUND_DOWN))
-
-    def place_market_order(self, symbol: str, side: str, qty: str):
-        """Размещает рыночный ордер БЕЗ SL/TP, правильно указывая positionIdx."""
-        self.log.info(f"Этап 1: Размещение рыночного ордера: {side} {qty} {symbol}")
-        
-        position_idx = 1 if side == "Buy" else 2
-        
-        try:
-            resp = self.session.place_order(
-                category="linear", symbol=symbol, side=side, orderType="Market",
-                qty=str(qty), positionIdx=position_idx
-            )
-            if resp['retCode'] == 0:
-                order_id = resp['result']['orderId']
-                self.log.info(f"Рыночный ордер {order_id} успешно отправлен.")
-                return order_id
-            else:
-                self.log.error(f"Ошибка размещения рыночного ордера: {resp.get('retMsg', 'Unknown error')}")
-                return None
-        except Exception as e:
-            self.log.error(f"Исключение при размещении рыночного ордера: {e}")
-            return None
 
     def set_trading_stop(self, symbol: str, side: str, sl_price: str = None, tp_price: str = None):
         """Устанавливает SL/TP для существующей позиции. Отправляет только необходимые параметры."""
