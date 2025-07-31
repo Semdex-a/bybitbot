@@ -2,7 +2,10 @@
 __pycache__/
 *.py[codz]
 *$py.class
-
+.env
+__pycache__/
+*.pyc
+trade_states.json
 # C extensions
 *.so
 
