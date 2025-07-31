@@ -20,54 +20,52 @@ class Protector:
         try:
             order_id = state['tp1_order_id']
             self.log.info(f"Проверка статуса ордера TP1 {order_id} для {symbol}...")
+
+            # --- Этап 1: Проверка, активен ли еще ордер ---
+            open_orders_resp = self.trader.session.get_open_orders(category="linear", symbol=symbol, orderId=order_id, limit=1)
             
-            # Используем запрос истории ордеров, так как он показывает и исполненные ордера
-            resp = self.trader.session.get_order_history(
-                category="linear", 
-                symbol=symbol, 
-                orderId=order_id,
-                limit=1
-            )
-            
-            if resp['retCode'] != 0:
-                self.log.error(f"Ошибка API при проверке ордера {order_id} для {symbol}: {resp.get('retMsg')}")
+            if open_orders_resp.get('retCode') == 0 and open_orders_resp.get('result', {}).get('list'):
+                order_status = open_orders_resp['result']['list'][0].get('orderStatus')
+                self.log.info(f"Ордер TP1 для {symbol} все еще активен. Статус: {order_status}. Ожидаем исполнения.")
+                return # Ордер еще открыт, выходим
+
+            # --- Этап 2: Если ордер не активен, проверяем историю, чтобы убедиться, что он исполнен ---
+            history_resp = self.trader.session.get_order_history(category="linear", symbol=symbol, orderId=order_id, limit=1)
+
+            if history_resp.get('retCode') != 0:
+                self.log.error(f"Ошибка API при проверке истории ордера {order_id} для {symbol}: {history_resp.get('retMsg')}")
                 return
 
-            order_list = resp.get('result', {}).get('list', [])
+            order_list = history_resp.get('result', {}).get('list', [])
             if not order_list:
-                self.log.warning(f"Не удалось найти историю для ордера {order_id}. Возможно, он еще не исполнен.")
+                self.log.error(f"Критическая ошибка: ордер {order_id} не найден ни в активных, ни в истории.")
                 return
 
             latest_order_status = order_list[0].get('orderStatus')
-            self.log.info(f"Текущий статус ордера TP1 для {symbol} на бирже: {latest_order_status}")
+            self.log.info(f"Ордер TP1 для {symbol} не активен. Статус в истории: {latest_order_status}")
 
-            # Если ордер исполнен
             if latest_order_status == 'Filled':
                 self.log.info(f"TP1 для {symbol} исполнен! Запускаю процедуру управления позицией.")
                 
-                # --- Этап 1: Проверка, не закрылась ли позиция по SL одновременно с TP1 ---
-                time.sleep(0.5) # Небольшая пауза, чтобы дать состоянию на бирже синхронизироваться
+                # --- Этап 3: Проверка, не закрылась ли позиция по SL одновременно с TP1 ---
+                time.sleep(0.5)
                 position = self.trader.get_open_positions(symbol)
                 if not position:
-                    self.log.warning(f"Позиция по {symbol} была закрыта (вероятно, по SL) почти одновременно с TP1. Завершаю управление.")
+                    self.log.warning(f"Позиция по {symbol} была закрыта почти одновременно с TP1. Завершаю управление.")
                     self.trade_state.remove_state(symbol)
                     return
 
-                # --- Этап 2: Отмена старого стоп-лосса ---
+                # --- Этап 4: Отмена старого стоп-лосса ---
                 self.trader.cancel_all_stop_orders(symbol)
                 time.sleep(0.5)
 
-                # --- Этап 3: Повторная проверка и получение актуального размера ---
+                # --- Этап 5: Повторная проверка и установка нового SL/TP ---
                 position = self.trader.get_open_positions(symbol)
                 if not position:
                     self.log.warning(f"Позиция по {symbol} была закрыта сразу после отмены SL. Завершаю управление.")
                     self.trade_state.remove_state(symbol)
                     return
                 
-                remaining_size = position['size']
-                self.log.info(f"Оставшийся размер позиции {symbol}: {remaining_size}")
-
-                # --- Этап 4: Установка нового SL/TP ---
                 instrument_info = self.trader.get_instrument_info(symbol)
                 tick_size = Decimal(instrument_info['priceFilter']['tickSize'])
                 
@@ -81,9 +79,8 @@ class Protector:
                     tp_price=str(tp_price_target)
                 )
 
-                # --- Этап 5: Верификация ---
+                # --- Этап 6: Верификация ---
                 time.sleep(3)
-                
                 final_position_check = self.trader.get_open_positions(symbol)
                 if not final_position_check:
                     self.log.warning(f"Позиция по {symbol} закрылась сразу после установки нового SL. Завершаю.")
@@ -91,7 +88,6 @@ class Protector:
                     return
 
                 current_sl = final_position_check.get('stopLoss', '')
-                
                 if current_sl and Decimal(current_sl) == sl_price_target:
                     self.log.info(f"УСПЕХ: Стоп-лосс для {symbol} успешно перемещен на {current_sl}.")
                     state['state'] = "BE_PENDING"
