@@ -26,12 +26,22 @@ class Protector:
                 
                 # 1. Отменяем старый стоп-лосс
                 if not self.trader.cancel_all_stop_orders(symbol):
-                    self.log.error(f"Критическая ошибка: не удалось отменить старый SL для {symbol}. Управление позицией прервано.")
-                    return
+                    self.log.error(f"Не удалось отменить старый SL для {symbol}. Управление позицией может быть нарушено.")
+                    # Продолжаем, так как установка нового SL может сработать
                 
                 time.sleep(0.5) # Даем бирже время на обработку отмены
 
-                # 2. Устанавливаем новый SL в безубыток и новый TP2
+                # 2. Получаем актуальный размер оставшейся позиции
+                remaining_position = self.trader.get_open_positions(symbol)
+                if not remaining_position:
+                    self.log.info(f"Позиция по {symbol} была полностью закрыта во время обработки TP1. Завершаю управление.")
+                    self.trade_state.remove_state(symbol)
+                    return
+
+                remaining_size = remaining_position['size']
+                self.log.info(f"Оставшийся размер позиции по {symbol}: {remaining_size}")
+
+                # 3. Устанавливаем новый SL в безубыток и новый TP2
                 instrument_info = self.trader.get_instrument_info(symbol)
                 if not instrument_info:
                     self.log.error(f"Не удалось получить инфо для {symbol}, невозможно установить новый SL/TP.")
@@ -42,9 +52,17 @@ class Protector:
                 sl_price = Decimal(str(state['entry_price'])).quantize(tick_size, rounding=ROUND_DOWN if state['side'] == "Buy" else ROUND_UP)
                 tp_price = Decimal(str(state['tp2_price'])).quantize(tick_size, rounding=ROUND_UP if state['side'] == "Buy" else ROUND_DOWN)
                 
-                # Используем tpslMode="Full", так как он применяется ко всей ОСТАВШЕЙСЯ позиции
-                if self.trader.set_trading_stop(symbol, str(sl_price), str(tp_price), state['side'], tpsl_mode="Partial"):
-                    state['state'] = "BE_PENDING"  # BE = BreakEven
+                # Явно указываем размер для SL и TP
+                if self.trader.set_trading_stop(
+                    symbol, 
+                    sl_price=str(sl_price), 
+                    tp_price=str(tp_price), 
+                    side=state['side'], 
+                    tpsl_mode="Partial", # Partial, так как позиция уже не полная
+                    sl_size=str(remaining_size),
+                    tp_size=str(remaining_size)
+                ):
+                    state['state'] = "BE_PENDING"
                     state['sl_price'] = float(sl_price)
                     self.trade_state.set_state(symbol, state)
                     self.log.info(f"Позиция {symbol} успешно переведена в безубыток с новым TP. Состояние обновлено на {state['state']}.")
