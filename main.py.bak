@@ -1,0 +1,178 @@
+import os
+import time
+import logging
+from collections import deque
+import openai
+import pandas as pd
+from pybit.unified_trading import WebSocket, HTTP
+from telegram import Bot
+from dotenv import load_dotenv
+from strategy import apply_strategy
+from trader import BybitTrader
+
+# --- Конфигурация ---
+load_dotenv()
+
+# Загружаем переменные окружения
+SYMBOLS_STR = os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT")
+SYMBOLS = [symbol.strip() for symbol in SYMBOLS_STR.split(',')]
+TESTNET = os.getenv("TESTNET", "false").lower() == "true"
+ENABLE_TRADING = os.getenv("ENABLE_TRADING", "false").lower() == "true"
+LEVERAGE = int(os.getenv("LEVERAGE", "5"))
+RISK_PER_TRADE_PERCENT = float(os.getenv("RISK_PER_TRADE_PERCENT", "1"))
+
+# Общие параметры стратегии
+EMA_WINDOW = 100
+COOLDOWN_PERIOD = 300  # 5 минут
+
+# --- Настройка логгирования ---
+class SymbolFilter(logging.Filter):
+    def filter(self, record):
+        if not hasattr(record, 'symbol'):
+            record.symbol = 'SYSTEM'
+        return True
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(symbol)s] - %(message)s')
+logger = logging.getLogger(__name__)
+for handler in logging.root.handlers:
+    handler.addFilter(SymbolFilter())
+
+# --- Инициализация клиентов API ---
+try:
+    api_key = os.getenv("BYBIT_API_KEY")
+    api_secret = os.getenv("BYBIT_API_SECRET")
+    if ENABLE_TRADING and (not api_key or not api_secret):
+        raise ValueError("BYBIT_API_KEY и BYBIT_API_SECRET должны быть установлены для торговли.")
+    
+    http_session = HTTP(testnet=TESTNET, api_key=api_key, api_secret=api_secret)
+    trader = BybitTrader(http_session, RISK_PER_TRADE_PERCENT, LEVERAGE)
+
+    telegram_token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("CHAT_ID")
+    if not telegram_token or not chat_id:
+        raise ValueError("TELEGRAM_TOKEN или CHAT_ID не найдены.")
+    tg_bot = Bot(telegram_token)
+
+except (ValueError, TypeError) as e:
+    logger.error(f"Критическая ошибка конфигурации: {e}", extra={'symbol': 'SYSTEM'})
+    exit()
+
+# --- Класс для отслеживания каждого символа ---
+class SymbolTracker:
+    def __init__(self, symbol: str, cooldown_period: int):
+        self.symbol = symbol
+        self.cooldown_period = cooldown_period
+        self.klines = deque(maxlen=EMA_WINDOW + 50)
+        self.last_signal_time = 0
+        self.log_adapter = logging.LoggerAdapter(logger, {'symbol': self.symbol})
+
+    def add_price(self, price: float):
+        kline_point = {'timestamp': int(time.time() * 1000), 'open': price, 'high': price, 'low': price, 'close': price, 'volume': 0}
+        self.klines.append(kline_point)
+        self.analyze()
+
+    def analyze(self):
+        if len(self.klines) < EMA_WINDOW:
+            self.log_adapter.info(f"Сбор данных: {len(self.klines)}/{EMA_WINDOW}")
+            return
+
+        df = pd.DataFrame(list(self.klines))
+        strategy_df = apply_strategy(df.copy(), ema_window=EMA_WINDOW)
+        
+        if strategy_df.empty: return
+
+        last_row = strategy_df.iloc[-1]
+        signal = last_row.get('signal', 0)
+        
+        self.log_adapter.info(f"Цена: {last_row['close']:,.2f} | EMA: {last_row['ema']:,.2f} | RSI: {last_row['rsi']:.1f} | Сигнал: {int(signal)}")
+
+        time_since_last_signal = time.time() - self.last_signal_time
+        if signal != 0 and time_since_last_signal >= self.cooldown_period:
+            self.log_adapter.info(f"Обнаружен сигнал {int(signal)}! Запускаю обработку...")
+            
+            # Добавляем символ в данные для передачи
+            last_row['symbol'] = self.symbol
+            
+            if ENABLE_TRADING:
+                trade_result = trader.execute_trade(last_row)
+                if trade_result:
+                    self.log_adapter.info(f"Сделка успешно открыта: {trade_result}")
+                    message = self.format_trade_confirmation_message(trade_result)
+                    send_telegram_signal(message)
+                else:
+                    self.log_adapter.warning("Торговый модуль не открыл сделку. Подробности в логах выше.")
+            else:
+                # Если торговля отключена, просто генерируем сигнал как раньше
+                gpt_message = self._generate_gpt_signal(last_row)
+                if gpt_message:
+                    send_telegram_signal(gpt_message)
+            
+            self.last_signal_time = time.time()
+
+    def format_trade_confirmation_message(self, trade_result: dict) -> str:
+        """Форматирует сообщение о реальной сделке для Telegram."""
+        side_text = "🟢 ПОКУПКА" if trade_result['side'] == 'Buy' else "🔴 ПРОДАЖА"
+        message = (
+            f"**РЕАЛЬНАЯ СДЕЛКА ОТКРЫТА**\n\n"
+            f"**Инструмент:** `{trade_result['symbol']}`\n"
+            f"**Направление:** {side_text}\n"
+            f"**Объем:** `{trade_result['qty']}`\n"
+            f"**Цена входа (рыночная):** `~{trade_result['entry_price']:,.4f}`\n\n"
+            f"**Уровни риска:**\n"
+            f"─ Стоп-лосс: `{trade_result['stop_loss']:,.4f}`\n"
+            f"─ Тейк-профит: `{trade_result['take_profit']:,.4f}`\n\n"
+            f"ID ордера: `{trade_result['order_id']}`"
+        )
+        return message
+
+    def _generate_gpt_signal(self, data: pd.Series) -> str:
+        # Эта функция остается для режима, когда торговля отключена
+        # ... (код генерации GPT сигнала без изменений)
+        return "GPT-сигнал (торговля отключена)"
+
+
+# --- Глобальные функции и обработчики ---
+def send_telegram_signal(text: str):
+    try:
+        tg_bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown')
+        logger.info("Сообщение успешно отправлено в Telegram.", extra={'symbol': 'TELEGRAM'})
+    except Exception as e:
+        logger.error(f"Ошибка отправки в Telegram: {e}", extra={'symbol': 'TELEGRAM'})
+
+trackers = {symbol: SymbolTracker(symbol, cooldown_period=COOLDOWN_PERIOD) for symbol in SYMBOLS}
+
+def handle_websocket_message(msg: dict):
+    try:
+        symbol = msg.get("topic", "").split('.')[-1]
+        if symbol in trackers:
+            price_str = msg.get("data", {}).get("lastPrice")
+            if price_str:
+                trackers[symbol].add_price(float(price_str))
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике WebSocket: {e}", extra={'symbol': 'WEBSOCKET'})
+
+def main():
+    logger.info(f"Запуск бота для: {', '.join(SYMBOLS)}", extra={'symbol': 'SYSTEM'})
+    if ENABLE_TRADING:
+        logger.warning("!!! РЕЖИМ РЕАЛЬНОЙ ТОРГОВЛИ АКТИВИРОВАН !!!", extra={'symbol': 'SYSTEM'})
+        if TESTNET:
+            logger.warning("Торговля будет вестись на ТЕСТОВОЙ СЕТИ Bybit.", extra={'symbol': 'SYSTEM'})
+        else:
+            logger.warning("!!! ТОРГОВЛЯ БУДЕТ ВЕСТИСЬ НА РЕАЛЬНЫЕ ДЕНЬГИ !!!", extra={'symbol': 'SYSTEM'})
+    else:
+        logger.info("Режим реальной торговли отключен. Бот будет только отправлять сигналы.", extra={'symbol': 'SYSTEM'})
+
+    ws = WebSocket(testnet=TESTNET, channel_type="linear")
+    for symbol in SYMBOLS:
+        ws.ticker_stream(symbol=symbol, callback=handle_websocket_message)
+    
+    logger.info("Успешно подписались на все потоки.", extra={'symbol': 'SYSTEM'})
+    while True:
+        try:
+            time.sleep(60)
+        except KeyboardInterrupt:
+            logger.info("Завершение работы...", extra={'symbol': 'SYSTEM'})
+            break
+
+if __name__ == "__main__":
+    main()

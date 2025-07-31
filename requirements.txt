@@ -1,0 +1,19 @@
+# Основные зависимости для торгового бота
+pandas>=1.5.0
+numpy>=1.21.0
+
+# Технические индикаторы
+ta>=0.10.2
+
+# Bybit API
+pybit>=5.7.0
+
+# Telegram bot
+python-telegram-bot>=20.0
+
+# Конфигурация
+python-dotenv>=1.0.0
+
+# Дополнительные утилиты
+asyncio-throttle>=1.0.2
+aiohttp>=3.8.0

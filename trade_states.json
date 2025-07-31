@@ -1,0 +1,65 @@
+{
+    "ZORAUSDT": {
+        "state": "TP1_PENDING",
+        "side": "Buy",
+        "initial_size": 265.0,
+        "tp1_order_id": "096e74f6-8086-4981-96f5-caeaf6c47a4d",
+        "tp2_price": 0.06269335,
+        "entry_price": 0.062125,
+        "sl_price": 0.061649
+    },
+    "XLMUSDT": {
+        "state": "TP1_PENDING",
+        "side": "Buy",
+        "initial_size": 64.0,
+        "tp1_order_id": "a05f354d-073d-4e56-b662-09a83ef48fce",
+        "tp2_price": 0.40742500000000004,
+        "entry_price": 0.40709,
+        "sl_price": 0.40556
+    },
+    "TONUSDT": {
+        "state": "TP1_PENDING",
+        "side": "Sell",
+        "initial_size": 6.8,
+        "tp1_order_id": "3e2c1adc-917e-44b8-b7e2-faa389605539",
+        "tp2_price": 3.5932649999999997,
+        "entry_price": 3.6122,
+        "sl_price": 3.6325
+    },
+    "SPKUSDT": {
+        "state": "TP1_PENDING",
+        "side": "Buy",
+        "initial_size": 245.0,
+        "tp1_order_id": "b851cc98-f3fa-4382-af59-8fa38b5d3d7f",
+        "tp2_price": 0.0938055,
+        "entry_price": 0.09347,
+        "sl_price": 0.09293
+    },
+    "AAVEUSDT": {
+        "state": "TP1_PENDING",
+        "side": "Sell",
+        "initial_size": 0.09,
+        "tp1_order_id": "69acad54-9e66-44db-9c0c-eddfa84a2924",
+        "tp2_price": 267.33000000000004,
+        "entry_price": 268.83111111,
+        "sl_price": 269.88
+    },
+    "LTCUSDT": {
+        "state": "TP1_PENDING",
+        "side": "Sell",
+        "initial_size": 0.2,
+        "tp1_order_id": "fdb5c337-354d-4603-aadb-f67a172b38d8",
+        "tp2_price": 108.66199999999999,
+        "entry_price": 109.03,
+        "sl_price": 109.37
+    },
+    "CRVUSDT": {
+        "state": "TP1_PENDING",
+        "side": "Sell",
+        "initial_size": 25.4,
+        "tp1_order_id": "20b1ddea-c51f-48d5-82e3-d6c7936bc87b",
+        "tp2_price": 0.9752449999999999,
+        "entry_price": 0.978,
+        "sl_price": 0.9836
+    }
+}

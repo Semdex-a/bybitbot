@@ -1,0 +1,216 @@
+import logging
+import time
+import pandas as pd
+from pybit.unified_trading import HTTP
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
+
+class BybitTrader:
+    def __init__(self, session: HTTP, risk_percent: float, leverage: int):
+        self.session = session
+        self.risk_percent = risk_percent
+        self.leverage = leverage
+        self.instrument_info_cache = {}
+        self.log = logging.getLogger(__name__)
+        self.initialized_symbols = set()
+
+    def get_instrument_info(self, symbol: str):
+        """Получает и кэширует информацию об инструменте."""
+        if symbol in self.instrument_info_cache and (time.time() - self.instrument_info_cache[symbol]['timestamp'] < 3600):
+            return self.instrument_info_cache[symbol]['data']
+        
+        self.log.info(f"Получение информации об инструменте для {symbol}...")
+        try:
+            resp = self.session.get_instruments_info(category="linear", symbol=symbol)
+            if resp['retCode'] == 0 and resp['result']['list']:
+                info = resp['result']['list'][0]
+                self.instrument_info_cache[symbol] = {'timestamp': time.time(), 'data': info}
+                return info
+            return None
+        except Exception as e:
+            self.log.error(f"Исключение при получении информации для {symbol}: {e}")
+            return None
+
+    def get_balance(self, coin="USDT"):
+        """Получает доступный баланс кошелька."""
+        try:
+            resp = self.session.get_wallet_balance(accountType="UNIFIED", coin=coin)
+            if resp['retCode'] == 0 and resp['result']['list']:
+                for acc in resp['result']['list']:
+                    if acc['accountType'] == "UNIFIED":
+                        balance = float(acc['totalWalletBalance'])
+                        self.log.info(f"Баланс Единого Аккаунта: {balance:.2f} {coin}")
+                        return balance
+                return 0
+            return 0
+        except Exception as e:
+            self.log.error(f"Исключение при получении баланса: {e}")
+            return 0
+
+    def switch_position_mode_to_oneway(self, symbol: str):
+        """Принудительно устанавливает One-Way Mode для символа."""
+        self.log.info(f"Инициализация: установка One-Way Mode для {symbol}...")
+        try:
+            self.session.switch_position_mode(category="linear", symbol=symbol, mode=3)
+            self.log.info(f"One-Way Mode для {symbol} успешно установлен.")
+            return True
+        except Exception as e:
+            # Ошибка 110025 = режим уже установлен. Считаем это успехом.
+            if "110025" in str(e):
+                self.log.info(f"One-Way Mode для {symbol} уже был установлен.")
+                return True
+            else:
+                self.log.error(f"Не удалось переключить режим для {symbol}: {e}")
+                return False
+
+    def set_leverage(self, symbol: str):
+        """Устанавливает кредитное плечо."""
+        self.log.info(f"Установка плеча {self.leverage}x для {symbol}...")
+        try:
+            self.session.set_leverage(category="linear", symbol=symbol, buyLeverage=str(self.leverage), sellLeverage=str(self.leverage))
+        except Exception as e:
+            if "leverage not modified" in str(e).lower():
+                self.log.info(f"Плечо для {symbol} уже было установлено.")
+            else:
+                self.log.error(f"Ошибка установки плеча для {symbol}: {e}")
+
+    def calculate_position_size(self, approx_entry_price: float, stop_loss_price: float, symbol: str, lot_size_filter):
+        """Рассчитывает размер позиции с двойным контролем: по риску и по доступной марже."""
+        balance = self.get_balance()
+        if balance <= 0: return None
+
+        # --- Уровень 1: Расчет по риску ---
+        risk_amount = balance * (self.risk_percent / 100)
+        price_risk_per_unit = abs(approx_entry_price - stop_loss_price)
+        if price_risk_per_unit == 0: return None
+        
+        qty_by_risk = risk_amount / price_risk_per_unit
+        
+        # --- Уровень 2: Расчет по доступной марже ---
+        # Максимальная позиция, которую можно открыть с текущим балансом и плечом
+        max_position_value = balance * self.leverage
+        qty_by_margin = max_position_value / approx_entry_price
+
+        # --- Выбираем МЕНЬШИЙ из двух размеров ---
+        final_qty = min(qty_by_risk, qty_by_margin)
+        self.log.info(f"Расчет размера: по риску={qty_by_risk:.4f}, по макс. марже={qty_by_margin:.4f}. Выбран меньший: {final_qty:.4f}")
+
+        # --- Финальная проверка на минимальный ордер ---
+        min_order_qty = float(lot_size_filter['minOrderQty'])
+        qty_step = Decimal(lot_size_filter['qtyStep'])
+
+        if final_qty < min_order_qty:
+            self.log.warning(f"Расчетный объем {final_qty:.6f} меньше минимального {min_order_qty}. Сделка отменена.")
+            return None
+        
+        return float(Decimal(final_qty).quantize(qty_step, rounding=ROUND_DOWN))
+
+    def place_market_order(self, symbol: str, side: str, qty: str):
+        """Размещает рыночный ордер БЕЗ SL/TP."""
+        self.log.info(f"Этап 1: Размещение рыночного ордера: {side} {qty} {symbol}")
+        # Финальная попытка: используем positionIdx=0 для One-Way Mode
+        position_idx = 0
+        try:
+            resp = self.session.place_order(
+                category="linear", symbol=symbol, side=side, orderType="Market",
+                qty=qty, positionIdx=position_idx
+            )
+            if resp['retCode'] == 0:
+                order_id = resp['result']['orderId']
+                self.log.info(f"Рыночный ордер {order_id} успешно отправлен.")
+                return order_id
+            else:
+                self.log.error(f"Ошибка размещения рыночного ордера: {resp.get('retMsg', 'Unknown error')}")
+                return None
+        except Exception as e:
+            self.log.error(f"Исключение при размещении рыночного ордера: {e}")
+            return None
+
+    def set_trading_stop(self, symbol: str, sl_price: str, tp_price: str):
+        """Устанавливает SL/TP для существующей позиции."""
+        self.log.info(f"Этап 2: Установка SL={sl_price} и TP={tp_price} для позиции {symbol}")
+        try:
+            resp = self.session.set_trading_stop(
+                category="linear", symbol=symbol, stopLoss=sl_price, takeProfit=tp_price,
+                positionIdx=0 # Используем 0 для One-Way Mode
+            )
+            if resp['retCode'] == 0:
+                self.log.info(f"SL/TP для {symbol} успешно установлены.")
+            else:
+                self.log.error(f"Ошибка установки SL/TP: {resp.get('retMsg', 'Unknown error')}")
+        except Exception as e:
+            self.log.error(f"Исключение при установке SL/TP: {e}")
+
+    def get_open_positions(self, symbol: str):
+        """Проверяет наличие открытых позиций."""
+        try:
+            resp = self.session.get_positions(category="linear", symbol=symbol)
+            if resp['retCode'] == 0 and resp['result']['list']:
+                for pos in resp['result']['list']:
+                    if float(pos['size']) > 0:
+                        return pos
+            return None
+        except Exception as e:
+            self.log.error(f"Исключение при проверке позиций: {e}")
+            return None
+
+    def execute_trade(self, signal_data: pd.Series):
+        """Полный цикл исполнения сделки: вход по рынку, затем установка SL/TP."""
+        symbol = signal_data['symbol']
+
+        # --- Этап 0: Инициализация символа ---
+        if symbol not in self.initialized_symbols:
+            self.get_instrument_info(symbol)
+            # Сначала переключаем режим, потом ставим плечо
+            if not self.switch_position_mode_to_oneway(symbol):
+                return None # Не удалось инициализировать, пропускаем сделку
+            self.set_leverage(symbol)
+            self.initialized_symbols.add(symbol)
+        
+        if self.get_open_positions(symbol):
+            self.log.info(f"Позиция по {symbol} уже открыта. Пропускаем новый сигнал.")
+            return None
+
+        instrument_info = self.instrument_info_cache[symbol]['data']
+        lot_size_filter = instrument_info['lotSizeFilter']
+        price_filter = instrument_info['priceFilter']
+        tick_size = Decimal(price_filter['tickSize'])
+        
+        side = "Buy" if signal_data['signal'] == 1 else "Sell"
+        
+        # Приблизительная цена входа для расчета размера
+        approx_entry_price = signal_data['close']
+        approx_sl_price = signal_data['stop_loss']
+        
+        qty = self.calculate_position_size(approx_entry_price, approx_sl_price, symbol, lot_size_filter)
+        if not qty: return None
+
+        # --- ЭТАП 1: ВХОД В РЫНОК ---
+        order_id = self.place_market_order(symbol, side, str(qty))
+        if not order_id:
+            return None # Ошибка на этапе входа
+
+        # --- ЭТАП 2: УСТАНОВКА SL/TP ---
+        time.sleep(1) # Даем бирже время обработать позицию
+        
+        position = self.get_open_positions(symbol)
+        if not position:
+            self.log.error("ПОЗИЦИЯ НЕ НАЙДЕНА ПОСЛЕ ОТКРЫТИЯ! SL/TP не установлены.")
+            return None
+
+        real_entry_price = Decimal(position['avgPrice'])
+        atr = Decimal(signal_data['atr'])
+        
+        # Рассчитываем SL/TP от РЕАЛЬНОЙ цены входа
+        sl_price_raw = real_entry_price - (atr * Decimal('2.0')) if side == "Buy" else real_entry_price + (atr * Decimal('2.0'))
+        tp_price_raw = real_entry_price + (atr * Decimal('4.0')) if side == "Buy" else real_entry_price - (atr * Decimal('4.0'))
+
+        # Округляем цены до правильного тика
+        sl_price = str(sl_price_raw.quantize(tick_size, rounding=ROUND_DOWN if side == "Buy" else ROUND_UP))
+        tp_price = str(tp_price_raw.quantize(tick_size, rounding=ROUND_UP if side == "Buy" else ROUND_DOWN))
+
+        self.set_trading_stop(symbol, sl_price, tp_price)
+        
+        return {
+            "order_id": order_id, "symbol": symbol, "side": side, "qty": qty,
+            "entry_price": position['avgPrice'], "stop_loss": sl_price, "take_profit": tp_price
+        }
