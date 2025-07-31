@@ -43,7 +43,7 @@ class Protector:
                 tp_price = Decimal(str(state['tp2_price'])).quantize(tick_size, rounding=ROUND_UP if state['side'] == "Buy" else ROUND_DOWN)
                 
                 # Используем tpslMode="Full", так как он применяется ко всей ОСТАВШЕЙСЯ позиции
-                if self.trader.set_trading_stop(symbol, str(sl_price), str(tp_price), state['side'], tpsl_mode="Full"):
+                if self.trader.set_trading_stop(symbol, str(sl_price), str(tp_price), state['side'], tpsl_mode="Partial"):
                     state['state'] = "BE_PENDING"  # BE = BreakEven
                     state['sl_price'] = float(sl_price)
                     self.trade_state.set_state(symbol, state)
