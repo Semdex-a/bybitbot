@@ -29,7 +29,7 @@ class Protector:
                 self.log.info(f"Ордер TP1 для {symbol} все еще активен. Статус: {order_status}. Ожидаем исполнения.")
                 return # Ордер еще открыт, выходим
 
-            # --- Этап 2: Если ордер не активен, проверяем историю, чтобы убедиться, что он исполнен ---
+            # --- Этап 2: Если ордер не активен, проверяем историю, чтобы узнать его финальный статус ---
             history_resp = self.trader.session.get_order_history(category="linear", symbol=symbol, orderId=order_id, limit=1)
 
             if history_resp.get('retCode') != 0:
@@ -41,10 +41,10 @@ class Protector:
                 self.log.error(f"Критическая ошибка: ордер {order_id} не найден ни в активных, ни в истории.")
                 return
 
-            latest_order_status = order_list[0].get('orderStatus')
-            self.log.info(f"Ордер TP1 для {symbol} не активен. Статус в истории: {latest_order_status}")
+            final_order_status = order_list[0].get('orderStatus')
+            self.log.info(f"Ордер TP1 для {symbol} не активен. Финальный статус в истории: {final_order_status}")
 
-            if latest_order_status == 'Filled':
+            if final_order_status == 'Filled':
                 self.log.info(f"TP1 для {symbol} исполнен! Запускаю процедуру управления позицией.")
                 
                 # --- Этап 3: Проверка, не закрылась ли позиция по SL одновременно с TP1 ---
@@ -98,6 +98,13 @@ class Protector:
                                       f"Цель: {sl_price_target}, Текущий SL на бирже: {current_sl}. "
                                       f"ТРЕБУЕТСЯ РУЧНОЕ ВМЕШАТЕЛЬСТВО!")
             
+            elif final_order_status == 'Cancelled':
+                self.log.warning(f"Ордер TP1 для {symbol} был отменен (вероятно, из-за срабатывания SL). Удаляю сделку из отслеживания.")
+                self.trade_state.remove_state(symbol)
+            
+            else:
+                self.log.error(f"Неизвестный финальный статус для ордера {order_id}: {final_order_status}. Требуется анализ.")
+
         except Exception as e:
             self.log.error(f"Критическая ошибка в check_tp1_order для {symbol}: {e}", exc_info=True)
 
