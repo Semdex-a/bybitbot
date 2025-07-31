@@ -47,7 +47,6 @@ class Protector:
             if final_order_status == 'Filled':
                 self.log.info(f"TP1 для {symbol} исполнен! Запускаю процедуру управления позицией.")
                 
-                # --- Этап 3: Проверка, не закрылась ли позиция по SL одновременно с TP1 ---
                 time.sleep(0.5)
                 position = self.trader.get_open_positions(symbol)
                 if not position:
@@ -55,11 +54,9 @@ class Protector:
                     self.trade_state.remove_state(symbol)
                     return
 
-                # --- Этап 4: Отмена старого стоп-лосса ---
                 self.trader.cancel_all_stop_orders(symbol)
                 time.sleep(0.5)
 
-                # --- Этап 5: Повторная проверка и установка нового SL/TP ---
                 position = self.trader.get_open_positions(symbol)
                 if not position:
                     self.log.warning(f"Позиция по {symbol} была закрыта сразу после отмены SL. Завершаю управление.")
@@ -72,31 +69,36 @@ class Protector:
                 sl_price_target = Decimal(str(state['entry_price'])).quantize(tick_size, rounding=ROUND_DOWN if state['side'] == "Buy" else ROUND_UP)
                 tp_price_target = Decimal(str(state['tp2_price'])).quantize(tick_size, rounding=ROUND_UP if state['side'] == "Buy" else ROUND_DOWN)
                 
-                self.trader.set_trading_stop(
-                    symbol=symbol, 
-                    side=state['side'], 
-                    sl_price=str(sl_price_target), 
-                    tp_price=str(tp_price_target)
-                )
+                # --- Установка SL и TP двумя раздельными командами ---
+                self.log.info(f"Шаг 1: Установка SL в безубыток для {symbol} на {sl_price_target}")
+                sl_success = self.trader.set_trading_stop(symbol=symbol, side=state['side'], sl_price=str(sl_price_target))
+                time.sleep(0.5)
+                
+                self.log.info(f"Шаг 2: Установка TP2 для {symbol} на {tp_price_target}")
+                tp_success = self.trader.set_trading_stop(symbol=symbol, side=state['side'], tp_price=str(tp_price_target))
 
-                # --- Этап 6: Верификация ---
+                # --- Верификация ---
                 time.sleep(3)
                 final_position_check = self.trader.get_open_positions(symbol)
                 if not final_position_check:
-                    self.log.warning(f"Позиция по {symbol} закрылась сразу после установки нового SL. Завершаю.")
+                    self.log.warning(f"Позиция по {symbol} закрылась во время верификации. Завершаю.")
                     self.trade_state.remove_state(symbol)
                     return
 
                 current_sl = final_position_check.get('stopLoss', '')
-                if current_sl and Decimal(current_sl) == sl_price_target:
-                    self.log.info(f"УСПЕХ: Стоп-лосс для {symbol} успешно перемещен на {current_sl}.")
+                current_tp = final_position_check.get('takeProfit', '')
+
+                sl_ok = current_sl and Decimal(current_sl) == sl_price_target
+                tp_ok = current_tp and Decimal(current_tp) == tp_price_target
+
+                if sl_ok and tp_ok:
+                    self.log.info(f"УСПЕХ: SL ({current_sl}) и TP ({current_tp}) для {symbol} успешно установлены.")
                     state['state'] = "BE_PENDING"
                     state['sl_price'] = float(sl_price_target)
                     self.trade_state.set_state(symbol, state)
                 else:
-                    self.log.critical(f"ОШИБКА ВЕРИФИКАЦИИ: Не удалось переместить стоп-лосс для {symbol}! "
-                                      f"Цель: {sl_price_target}, Текущий SL на бирже: {current_sl}. "
-                                      f"ТРЕБУЕТСЯ РУЧНОЕ ВМЕШАТЕЛЬСТВО!")
+                    self.log.critical(f"ОШИБКА ВЕРИФИКАЦИИ для {symbol}! SL_OK: {sl_ok} (Цель: {sl_price_target}, Факт: {current_sl}), "
+                                      f"TP_OK: {tp_ok} (Цель: {tp_price_target}, Факт: {current_tp}). ТРЕБУЕТСЯ РУЧНОЕ ВМЕШАТЕЛЬСТВО!")
             
             elif final_order_status == 'Cancelled':
                 self.log.warning(f"Ордер TP1 для {symbol} был отменен (вероятно, из-за срабатывания SL). Удаляю сделку из отслеживания.")
