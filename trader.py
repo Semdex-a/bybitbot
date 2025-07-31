@@ -113,16 +113,16 @@ class BybitTrader:
             self.log.error(f"Исключение при размещении рыночного ордера: {e}")
             return None
 
-    def set_trading_stop(self, symbol: str, sl_price: str, tp_price: str, side: str):
+    def set_trading_stop(self, symbol: str, sl_price: str, tp_price: str, side: str, tpsl_mode: str = "Full"):
         """Устанавливает SL/TP для существующей позиции, правильно указывая positionIdx."""
-        self.log.info(f"Установка SL={sl_price} и TP={tp_price} для позиции {symbol}")
+        self.log.info(f"Установка SL={sl_price} и TP={tp_price} для позиции {symbol} с режимом {tpsl_mode}")
         
         position_idx = 1 if side == "Buy" else 2
         
         try:
             resp = self.session.set_trading_stop(
                 category="linear", symbol=symbol, stopLoss=sl_price, takeProfit=tp_price,
-                positionIdx=position_idx, tpslMode="Full"
+                positionIdx=position_idx, tpslMode=tpsl_mode
             )
             if resp['retCode'] == 0:
                 self.log.info(f"SL/TP для {symbol} успешно установлены.")
