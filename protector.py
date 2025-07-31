@@ -45,21 +45,29 @@ class Protector:
             if latest_order_status == 'Filled':
                 self.log.info(f"TP1 для {symbol} исполнен! Запускаю процедуру управления позицией.")
                 
-                # --- Этап 1: Отмена старого стоп-лосса ---
+                # --- Этап 1: Проверка, не закрылась ли позиция по SL одновременно с TP1 ---
+                time.sleep(0.5) # Небольшая пауза, чтобы дать состоянию на бирже синхронизироваться
+                position = self.trader.get_open_positions(symbol)
+                if not position:
+                    self.log.warning(f"Позиция по {symbol} была закрыта (вероятно, по SL) почти одновременно с TP1. Завершаю управление.")
+                    self.trade_state.remove_state(symbol)
+                    return
+
+                # --- Этап 2: Отмена старого стоп-лосса ---
                 self.trader.cancel_all_stop_orders(symbol)
                 time.sleep(0.5)
 
-                # --- Этап 2: Получение актуальной информации о позиции ---
+                # --- Этап 3: Повторная проверка и получение актуального размера ---
                 position = self.trader.get_open_positions(symbol)
                 if not position:
-                    self.log.info(f"Позиция по {symbol} закрылась во время обработки. Завершаю.")
+                    self.log.warning(f"Позиция по {symbol} была закрыта сразу после отмены SL. Завершаю управление.")
                     self.trade_state.remove_state(symbol)
                     return
                 
                 remaining_size = position['size']
                 self.log.info(f"Оставшийся размер позиции {symbol}: {remaining_size}")
 
-                # --- Этап 3: Установка нового SL/TP ---
+                # --- Этап 4: Установка нового SL/TP ---
                 instrument_info = self.trader.get_instrument_info(symbol)
                 tick_size = Decimal(instrument_info['priceFilter']['tickSize'])
                 
@@ -67,12 +75,14 @@ class Protector:
                 tp_price_target = Decimal(str(state['tp2_price'])).quantize(tick_size, rounding=ROUND_UP if state['side'] == "Buy" else ROUND_DOWN)
                 
                 self.trader.set_trading_stop(
-                    symbol, str(sl_price_target), str(tp_price_target), state['side'], 
-                    tpsl_mode="Partial", sl_size=str(remaining_size), tp_size=str(remaining_size)
+                    symbol=symbol, 
+                    side=state['side'], 
+                    sl_price=str(sl_price_target), 
+                    tp_price=str(tp_price_target)
                 )
 
-                # --- Этап 4: Верификация ---
-                time.sleep(3) # Ждем 3 секунды
+                # --- Этап 5: Верификация ---
+                time.sleep(3)
                 
                 final_position_check = self.trader.get_open_positions(symbol)
                 if not final_position_check:
