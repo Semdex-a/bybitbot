@@ -22,26 +22,32 @@ class Protector:
             
             # Если ордер исполнен (не найден в списке активных)
             if resp['retCode'] == 0 and not resp['result']['list']:
-                self.log.info(f"TP1 для {symbol} исполнен! Перемещаю SL в безубыток и ставлю TP2.")
+                self.log.info(f"TP1 для {symbol} исполнен! Запускаю процедуру управления позицией (установка БУ и ТП2).")
                 
+                # 1. Отменяем старый стоп-лосс
+                if not self.trader.cancel_all_stop_orders(symbol):
+                    self.log.error(f"Критическая ошибка: не удалось отменить старый SL для {symbol}. Управление позицией прервано.")
+                    return
+                
+                time.sleep(0.5) # Даем бирже время на обработку отмены
+
+                # 2. Устанавливаем новый SL в безубыток и новый TP2
                 instrument_info = self.trader.get_instrument_info(symbol)
                 if not instrument_info:
-                    self.log.error(f"Не удалось получить инфо для {symbol}, невозможно установить SL/TP.")
+                    self.log.error(f"Не удалось получить инфо для {symbol}, невозможно установить новый SL/TP.")
                     return
 
                 tick_size = Decimal(instrument_info['priceFilter']['tickSize'])
                 
-                # Новые уровни SL и TP
                 sl_price = Decimal(str(state['entry_price'])).quantize(tick_size, rounding=ROUND_DOWN if state['side'] == "Buy" else ROUND_UP)
                 tp_price = Decimal(str(state['tp2_price'])).quantize(tick_size, rounding=ROUND_UP if state['side'] == "Buy" else ROUND_DOWN)
                 
-                # Устанавливаем новые SL/TP для оставшейся позиции в режиме "Partial"
-                if self.trader.set_trading_stop(symbol, str(sl_price), str(tp_price), state['side'], tpsl_mode="Partial"):
-                    # Обновляем состояние и сохраняем
+                # Используем tpslMode="Full", так как он применяется ко всей ОСТАВШЕЙСЯ позиции
+                if self.trader.set_trading_stop(symbol, str(sl_price), str(tp_price), state['side'], tpsl_mode="Full"):
                     state['state'] = "BE_PENDING"  # BE = BreakEven
                     state['sl_price'] = float(sl_price)
                     self.trade_state.set_state(symbol, state)
-                    self.log.info(f"Состояние для {symbol} обновлено на {state['state']} и сохранено.")
+                    self.log.info(f"Позиция {symbol} успешно переведена в безубыток с новым TP. Состояние обновлено на {state['state']}.")
                 else:
                     self.log.error(f"Не удалось установить новый SL/TP для {symbol} после исполнения TP1.")
 
