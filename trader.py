@@ -116,6 +116,28 @@ class BybitTrader:
         qty_step = Decimal(lot_size_filter['qtyStep'])
         return float(Decimal(str(final_qty)).quantize(qty_step, rounding=ROUND_DOWN))
 
+    def place_market_order(self, symbol: str, side: str, qty: str):
+        """Размещает рыночный ордер БЕЗ SL/TP, правильно указывая positionIdx."""
+        self.log.info(f"Этап 1: Размещение рыночного ордера: {side} {qty} {symbol}")
+    
+        position_idx = 1 if side == "Buy" else 2
+    
+        try:
+            resp = self.session.place_order(
+                category="linear", symbol=symbol, side=side, orderType="Market",
+                qty=str(qty), positionIdx=position_idx
+            )
+            if resp['retCode'] == 0:
+                order_id = resp['result']['orderId']
+                self.log.info(f"Рыночный ордер {order_id} успешно отправлен.")
+                return order_id
+            else:
+                self.log.error(f"Ошибка размещения рыночного ордера: {resp.get('retMsg', 'Unknown error')}")
+                return None
+        except Exception as e:
+            self.log.error(f"Исключение при размещении рыночного ордера: {e}")
+            return None
+
     def set_trading_stop(self, symbol: str, side: str, sl_price: str = None, tp_price: str = None):
         """Устанавливает SL/TP для существующей позиции. Отправляет только необходимые параметры."""
         self.log.info(f"Установка SL={sl_price} TP={tp_price} для {symbol}")
